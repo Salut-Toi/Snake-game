@@ -15,8 +15,9 @@ pygame.init()
 GREEN = (173, 204, 96)
 DARK_GREEN = (43, 51, 24)
 WHITE = (255, 255, 255)
+LIGHT_ACTIVE_GREEN = (140, 190, 90)  # actif pour les boutons de vitesse
 
-# --- Validation pseudo (même règle que la DB si tu l'utilises côté client)
+# --- Validation pseudo ---
 ALLOWED_USERNAME_RE = re.compile(r"^[A-Za-z0-9 _-]{3,20}$")
 
 # --- Grille ---
@@ -32,18 +33,17 @@ screen_rect = screen.get_rect()
 
 # --- Images ---
 base_path = os.path.dirname(__file__)
-
 apple_path = os.path.join(base_path, "images", "apple.png")
 apple_raw = pygame.image.load(apple_path).convert_alpha()
 apple_raw.set_colorkey(apple_raw.get_at((0, 0)))
 
-logo_path = r"C:\Users\kyman\Snake-game\images\snake.png"
+logo_path = os.path.join(base_path, "images", "snake.png")
 logo_raw = pygame.image.load(logo_path).convert_alpha() if os.path.exists(logo_path) else None
 
 border_path = os.path.join(base_path, "images", "border.png")
 border_raw = pygame.image.load(border_path).convert_alpha() if os.path.exists(border_path) else None
 
-# Décor : si border.png fait 1024x1024 et que l’ouverture intérieure démarre à 128px :
+# Décor
 BORDER_INSET_SRC = 128
 BORDER_OVERSHOOT = 1.08
 
@@ -73,13 +73,12 @@ def rescale_assets():
     global food_surface, logo_surface
     food_surface = pygame.transform.smoothscale(apple_raw, (cell_size, cell_size))
     if logo_raw:
-        side = int(clamp(cell_size * 5, 80, 260))
+        side = int(clamp(cell_size * 4.2, 70, 200))
         logo_surface = pygame.transform.smoothscale(logo_raw, (side, side))
     else:
         logo_surface = None
 
 def compute_layout_for_window(w, h):
-    """Grille réduite (GRID_SCALE), centrée ; polices échelonnées ; assets rescalés."""
     global cell_size, board_size, offset_x, offset_y, title_font, score_font, ui_font
     usable_side = int(min(w, h) * GRID_SCALE)
     cell_size = max(12, usable_side // number_of_cells)
@@ -89,21 +88,6 @@ def compute_layout_for_window(w, h):
     scale_ui = min(w / BASE_SIDE, h / BASE_SIDE)
     title_font, score_font, ui_font = make_fonts(scale_ui)
     rescale_assets()
-
-def compute_border_target_rect():
-    """Rect du décor tel que son ouverture colle au board (offset_x/y, board_size)."""
-    if not border_raw:
-        return None
-    W, H = border_raw.get_size()
-    inset = BORDER_INSET_SRC
-    s_x = board_size / (W - 2*inset)
-    s_y = board_size / (H - 2*inset)
-    s = min(s_x, s_y) * BORDER_OVERSHOOT
-    dest_w = int(W * s)
-    dest_h = int(H * s)
-    x = int(offset_x - inset * s)
-    y = int(offset_y - inset * s)
-    return pygame.Rect(x, y, dest_w, dest_h)
 
 def screen_fit_rect():
     return pygame.Rect(0, 0, screen_rect.w, screen_rect.h)
@@ -115,7 +99,6 @@ def draw_border_at_rect(rect):
     screen.blit(scaled, rect.topleft)
 
 def draw_fullscreen_border_with_board_hole():
-    """Bordure plein écran + trou central (zone de jeu) peinte en vert champ."""
     if not border_raw:
         return
     draw_border_at_rect(screen_fit_rect())
@@ -153,12 +136,19 @@ def blit_text_with_outline_center(surface, text, font, main_color, outline_color
             surface.blit(outline, r)
     surface.blit(base, rect)
 
+# --- Paramètres Gameplay (persistés) ---
+SPEED_INTERVALS = {"facile": 220, "normal": 180, "difficile": 140}
+current_speed = db.get_setting("speed", "normal")
+if current_speed not in SPEED_INTERVALS:
+    current_speed = "normal"
+wrap_walls = db.get_setting("wrap_walls", "0") == "1"
+
 # --- États ---
-# MENU | PLAYING | LEADERBOARD | PAUSED (depuis le jeu) | HELP_MENU (aide ouverte depuis l'accueil)
+# MENU | PLAYING | LEADERBOARD | PAUSED | HELP_MENU
 app_state = "MENU"
 
 # =========================
-#        UI
+#        UI widgets
 # =========================
 class Button:
     def __init__(self, rect, text, font, bg_color, text_color, hover_color=None, radius=10):
@@ -171,14 +161,43 @@ class Button:
         self.radius = radius
     def set_rect(self, rect): self.rect = pygame.Rect(rect)
     def set_font(self, font): self.font = font
-    def draw(self, surface):
+    def draw(self, surface, override_bg=None):
         mouse = pygame.mouse.get_pos()
-        color = self.hover if self.rect.collidepoint(mouse) else self.bg
+        base_col = override_bg if override_bg is not None else self.bg
+        color = self.hover if self.rect.collidepoint(mouse) else base_col
         pygame.draw.rect(surface, color, self.rect, border_radius=self.radius)
         label = self.font.render(self.text, True, self.fg)
         surface.blit(label, label.get_rect(center=self.rect.center))
     def is_clicked(self, event):
         return event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and self.rect.collidepoint(event.pos)
+
+class Toggle:
+    def __init__(self, rect, font, label, on=False):
+        self.rect = pygame.Rect(rect)
+        self.font = font
+        self.label = label
+        self.on = on
+    def set_rect(self, rect): self.rect = pygame.Rect(rect)
+    def set_font(self, font): self.font = font
+    def draw(self, surface):
+        label_surf = self.font.render(self.label, True, DARK_GREEN)
+        label_rect = label_surf.get_rect(midleft=(self.rect.x + 8, self.rect.centery))
+        surface.blit(label_surf, label_rect)
+        sw_h = self.rect.h
+        sw_w = int(sw_h * 1.7)
+        sw_x = self.rect.right - sw_w
+        sw_y = self.rect.y
+        pygame.draw.rect(surface, (90, 150, 90) if self.on else (160, 160, 160),
+                         (sw_x, sw_y, sw_w, sw_h), border_radius=sw_h//2)
+        knob_r = sw_h//2 - 3
+        cx = sw_x + (sw_h//2 if not self.on else sw_w - sw_h//2)
+        pygame.draw.circle(surface, WHITE, (cx, sw_y + sw_h//2), knob_r)
+    def is_clicked(self, event):
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if self.rect.collidepoint(event.pos):
+                self.on = not self.on
+                return True
+        return False
 
 class TextInput:
     def __init__(self, rect, font, text_color, bg_color, border_color,
@@ -268,7 +287,7 @@ class Game:
     def __init__(self):
         self.snake = Snake()
         self.food = Food(self.snake.body)
-        self.state = "STOPPED"   # STOPPED | PLAYING (interne au jeu)
+        self.state = "STOPPED"
         self.score = 0
     def draw(self):
         self.snake.draw()
@@ -276,18 +295,25 @@ class Game:
     def update(self):
         if self.state == "PLAYING":
             self.snake.update()
+            self.apply_wrap_or_check_wall()
             self.check_collision_with_food()
-            self.check_fail()
             self.check_self_collision()
+    def apply_wrap_or_check_wall(self):
+        head = self.snake.body[0]
+        if wrap_walls:
+            if head.x < 0: head.x = number_of_cells - 1
+            elif head.x >= number_of_cells: head.x = 0
+            if head.y < 0: head.y = number_of_cells - 1
+            elif head.y >= number_of_cells: head.y = 0
+            self.snake.body[0] = head
+        else:
+            if head.x in (-1, number_of_cells) or head.y in (-1, number_of_cells):
+                self.game_over()
     def check_collision_with_food(self):
         if self.snake.body[0] == self.food.position:
             self.food.position = self.food.generate_random_position(self.snake.body)
             self.snake.new_block = True
             self.score += 1
-    def check_fail(self):
-        h = self.snake.body[0]
-        if h.x in (-1, number_of_cells) or h.y in (-1, number_of_cells):
-            self.game_over()
     def check_self_collision(self):
         if self.snake.body[0] in self.snake.body[1:]:
             self.game_over()
@@ -311,53 +337,128 @@ class MenuScreen:
         self.title_font = title_font
         self.ui_font = ui_font
         self.screen_rect = screen_rect
+
         self.input = TextInput(pygame.Rect(0,0,10,10), ui_font, DARK_GREEN, (240,245,230), DARK_GREEN)
-        self.start_btn = Button(pygame.Rect(0,0,10,10), "Démarrer", ui_font, DARK_GREEN, (255,255,255), (60,72,35))
-        self.leader_btn= Button(pygame.Rect(0,0,10,10), "Leaderboard", ui_font, DARK_GREEN, (255,255,255), (60,72,35))
-        self.help_btn  = Button(pygame.Rect(0,0,10,10), "Aide", ui_font, DARK_GREEN, (255,255,255), (60,72,35))
+        self.start_btn   = Button(pygame.Rect(0,0,10,10), "Démarrer",    ui_font, DARK_GREEN, (255,255,255), (60,72,35))
+        self.leader_btn  = Button(pygame.Rect(0,0,10,10), "Leaderboard", ui_font, DARK_GREEN, (255,255,255), (60,72,35))
+        self.help_btn    = Button(pygame.Rect(0,0,10,10), "Aide",        ui_font, DARK_GREEN, (255,255,255), (60,72,35))
+
+        self.speed_easy   = Button(pygame.Rect(0,0,10,10),  "Facile",     ui_font, DARK_GREEN, (255,255,255), (60,72,35))
+        self.speed_normal = Button(pygame.Rect(0,0,10,10),  "Normal",     ui_font, DARK_GREEN, (255,255,255), (60,72,35))
+        self.speed_hard   = Button(pygame.Rect(0,0,10,10),  "Difficile",  ui_font, DARK_GREEN, (255,255,255), (60,72,35))
+        self.wrap_toggle  = Toggle(pygame.Rect(0,0,10,10), ui_font, "Bords traversables", on=wrap_walls)
+
         self.message = ""
         self.relayout(screen_rect)
+
     def relayout(self, r):
         self.screen_rect = r
         w, h = r.size
-        input_w = int(clamp(w * 0.5, 320, 720))
-        input_h = int(clamp(h * 0.06, 40, 90))
-        center_y = int(h * 0.5)
-        self.input.set_rect(pygame.Rect(r.centerx - input_w // 2, center_y, input_w, input_h))
-        btn_w = int(clamp(w * 0.32, 220, 420))
-        btn_h = int(clamp(h * 0.07, 50, 100))
-        self.start_btn.set_rect( pygame.Rect(r.centerx - btn_w // 2, center_y + int(h * 0.10), btn_w, btn_h))
-        self.leader_btn.set_rect(pygame.Rect(r.centerx - btn_w // 2, center_y + int(h * 0.20), btn_w, btn_h))
-        self.help_btn.set_rect(  pygame.Rect(r.centerx - btn_w // 2, center_y + int(h * 0.30), btn_w, btn_h))
+
+        # >>> Espacements augmentés
+        title_y   = int(h * 0.06)
+        logo_y    = int(h * 0.14)     # LOGO
+        speed_y   = int(h * 0.26)     # rangée des vitesses (plus bas)
+        toggle_y  = int(h * 0.36)
+        input_y   = int(h * 0.46)
+        buttons_y = int(h * 0.60)
+
+        # Pseudo
+        input_w = int(clamp(w * 0.50, 360, 720))
+        input_h = int(clamp(h * 0.06, 40, 78))
+        self.input.set_rect(pygame.Rect(r.centerx - input_w // 2, input_y, input_w, input_h))
+
+        # Boutons vitesse — plus espacés
+        btn_w = int(clamp(w * 0.15, 130, 220))
+        btn_h = int(clamp(h * 0.07,  48, 82))
+        spacing = int(clamp(w * 0.03, 18, 48))  # ← espace horizontal augmenté
+        total_w = 3 * btn_w + 2 * spacing
+        start_x = r.centerx - total_w // 2
+        self.speed_easy.set_rect(  pygame.Rect(start_x,                       speed_y, btn_w, btn_h))
+        self.speed_normal.set_rect(pygame.Rect(start_x + btn_w + spacing,     speed_y, btn_w, btn_h))
+        self.speed_hard.set_rect(  pygame.Rect(start_x + 2*(btn_w + spacing), speed_y, btn_w, btn_h))
+
+        # Toggle wrap centré (hauteur = boutons vitesse)
+        toggle_h = btn_h
+        toggle_w = int(clamp(w * 0.50, 360, 640))
+        self.wrap_toggle.set_rect(pygame.Rect(r.centerx - toggle_w//2, toggle_y, toggle_w, toggle_h))
+
+        # Boutons bas — bien espacés verticalement
+        main_btn_w = int(clamp(w * 0.30, 240, 380))
+        main_btn_h = btn_h
+        gap_y = int(clamp(h * 0.09, 52, 120))   # ← gros écart entre les 3
+        self.start_btn.set_rect(  pygame.Rect(r.centerx - main_btn_w // 2, buttons_y,                 main_btn_w, main_btn_h))
+        self.leader_btn.set_rect( pygame.Rect(r.centerx - main_btn_w // 2, buttons_y + gap_y,         main_btn_w, main_btn_h))
+        self.help_btn.set_rect(   pygame.Rect(r.centerx - main_btn_w // 2, buttons_y + 2 * gap_y,     main_btn_w, main_btn_h))
+
+        # pour draw()
+        self._title_y = title_y
+        self._logo_center = (r.centerx, logo_y)
+
     def apply_fonts(self, title_font, ui_font):
         self.title_font = title_font
         self.ui_font = ui_font
         self.input.set_font(ui_font)
-        self.start_btn.set_font(ui_font)
-        self.leader_btn.set_font(ui_font)
-        self.help_btn.set_font(ui_font)
+        for b in (self.start_btn, self.leader_btn, self.help_btn,
+                  self.speed_easy, self.speed_normal, self.speed_hard):
+            b.set_font(ui_font)
+        self.wrap_toggle.set_font(ui_font)
+
+    def _apply_speed_choice(self, choice: str):
+        global current_speed
+        if choice not in SPEED_INTERVALS: return
+        current_speed = choice
+        db.set_setting("speed", choice)
+        set_snake_timer(SPEED_INTERVALS[choice])
+
     def handle_event(self, event):
         s = self.input.handle_event(event)
-        if s == "submit": return ("START", self.input.text.strip() or None)
-        if self.start_btn.is_clicked(event):  return ("START", self.input.text.strip() or None)
-        if self.leader_btn.is_clicked(event): return ("LEADERBOARD", None)
-        if self.help_btn.is_clicked(event):   return ("HELP_MENU", None)
+        if s == "submit":
+            return ("START", self.input.text.strip() or None)
+
+        if self.speed_easy.is_clicked(event):   self._apply_speed_choice("facile")
+        if self.speed_normal.is_clicked(event): self._apply_speed_choice("normal")
+        if self.speed_hard.is_clicked(event):   self._apply_speed_choice("difficile")
+
+        if self.wrap_toggle.is_clicked(event):
+            global wrap_walls
+            wrap_walls = self.wrap_toggle.on
+            db.set_setting("wrap_walls", "1" if wrap_walls else "0")
+
+        if self.start_btn.is_clicked(event):   return ("START", self.input.text.strip() or None)
+        if self.leader_btn.is_clicked(event):  return ("LEADERBOARD", None)
+        if self.help_btn.is_clicked(event):    return ("HELP_MENU", None)
         return (None, None)
+
     def update(self, dt): self.input.update(dt)
+
     def draw(self, surface):
-        # Titre centré avec contour blanc
         blit_text_with_outline_center(
             surface, "Snake Game", self.title_font, DARK_GREEN, WHITE,
-            (self.screen_rect.centerx, int(self.screen_rect.height * 0.12)), thickness=3
+            (self.screen_rect.centerx, self._title_y), thickness=3
         )
-        # Logo
         if logo_surface:
-            logo_rect = logo_surface.get_rect(center=(self.screen_rect.centerx, self.input.rect.top - int(self.screen_rect.height * 0.12)))
-            surface.blit(logo_surface, logo_rect)
+            surface.blit(logo_surface, logo_surface.get_rect(center=self._logo_center))
+
+        # Libellé "Vitesse :" juste sous le logo
+        speed_label_y = self._logo_center[1] + int(self.speed_easy.rect.h * 0.9)
+        blit_text_with_outline_center(
+            surface, "Vitesse :", self.ui_font, DARK_GREEN, WHITE,
+            (self.screen_rect.centerx, speed_label_y), thickness=2
+        )
+
+        # Boutons Vitesse (vert clair si sélectionné)
+        for name, btn in [("facile", self.speed_easy), ("normal", self.speed_normal), ("difficile", self.speed_hard)]:
+            active = (current_speed == name)
+            color = LIGHT_ACTIVE_GREEN if active else DARK_GREEN
+            btn.draw(surface, override_bg=color)
+
+        self.wrap_toggle.draw(surface)
         self.input.draw(surface)
         self.start_btn.draw(surface)
         self.leader_btn.draw(surface)
         self.help_btn.draw(surface)
+
         if self.message:
             m = self.ui_font.render(self.message, True, (200, 40, 40))
             surface.blit(m, m.get_rect(midtop=(self.screen_rect.centerx, self.input.rect.bottom + 10)))
@@ -368,27 +469,21 @@ class LeaderboardScreen:
         self.ui_font = ui_font
         self.screen_rect = screen_rect
         self.rows = []
-        self.current_period = "daily"  # par défaut : jour
-
-        # Crée des boutons ; placement fait dans relayout()
+        self.current_period = "daily"
         self.daily_btn   = Button(pygame.Rect(0,0,10,10), "Jour",     ui_font, DARK_GREEN, (255,255,255), (60,72,35))
         self.weekly_btn  = Button(pygame.Rect(0,0,10,10), "Semaine",  ui_font, DARK_GREEN, (255,255,255), (60,72,35))
         self.monthly_btn = Button(pygame.Rect(0,0,10,10), "Mois",     ui_font, DARK_GREEN, (255,255,255), (60,72,35))
         self.back_btn    = Button(pygame.Rect(0,0,10,10), "Retour",   ui_font, DARK_GREEN, (255,255,255), (60,72,35))
-
         self.relayout(screen_rect)
         self.load_rows()
 
     def _layout_period_buttons(self, w, h):
-        """Centre les 3 boutons période en haut du leaderboard."""
-        btn_w = int(clamp(w * 0.16, 150, 240))
-        btn_h = int(clamp(h * 0.07,  48,  88))
-        spacing = int(clamp(w * 0.02, 12, 28))
-        y_base = int(h * 0.16)
-
-        total_width = 3 * btn_w + 2 * spacing
-        start_x = (w - total_width) // 2
-
+        btn_w = int(clamp(w * 0.15, 130, 220))
+        btn_h = int(clamp(h * 0.07,  48, 82))
+        spacing = int(clamp(w * 0.03, 18, 48))
+        y_base = int(h * 0.18)
+        total_w = 3 * btn_w + 2 * spacing
+        start_x = (w - total_w) // 2
         self.daily_btn.set_rect(  pygame.Rect(start_x,                       y_base, btn_w, btn_h))
         self.weekly_btn.set_rect( pygame.Rect(start_x + btn_w + spacing,     y_base, btn_w, btn_h))
         self.monthly_btn.set_rect(pygame.Rect(start_x + 2*(btn_w + spacing), y_base, btn_w, btn_h))
@@ -397,10 +492,9 @@ class LeaderboardScreen:
         self.screen_rect = r
         w, h = r.size
         self._layout_period_buttons(w, h)
-
-        btn_w = int(clamp(w * 0.18, 160, 320))
-        btn_h = int(clamp(h * 0.06, 44, 90))
-        self.back_btn.set_rect(pygame.Rect(r.centerx - btn_w // 2, h - btn_h - int(h * 0.05), btn_w, btn_h))
+        btn_w = int(clamp(w * 0.20, 170, 340))
+        btn_h = int(clamp(h * 0.07, 50, 90))
+        self.back_btn.set_rect(pygame.Rect(r.centerx - btn_w // 2, h - btn_h - int(h * 0.06), btn_w, btn_h))
 
     def apply_fonts(self, title_font, ui_font):
         self.title_font = title_font
@@ -427,26 +521,21 @@ class LeaderboardScreen:
             self.rows = []
 
     def draw(self, surface):
-        # Titre centré avec contour blanc
         blit_text_with_outline_center(
             surface, "Classements", self.title_font, DARK_GREEN, WHITE,
-            (self.screen_rect.centerx, int(self.screen_rect.height * 0.08)), thickness=3
+            (self.screen_rect.centerx, int(self.screen_rect.height * 0.10)), thickness=3
         )
-
-        # Boutons période (actif en vert plus clair)
         for b in (self.daily_btn, self.weekly_btn, self.monthly_btn):
             active = (
                 (self.current_period == "daily"   and b.text == "Jour") or
                 (self.current_period == "weekly"  and b.text == "Semaine") or
                 (self.current_period == "monthly" and b.text == "Mois")
             )
-            color = (100,150,60) if active else DARK_GREEN
-            pygame.draw.rect(surface, color, b.rect, border_radius=b.radius)
-            b.draw(surface)
+            color = LIGHT_ACTIVE_GREEN if active else DARK_GREEN
+            b.draw(surface, override_bg=color)
 
-        # Tableau
-        y = int(self.screen_rect.height * 0.30)
-        line_gap = int(clamp(self.screen_rect.height * 0.055, 32, 72))
+        y = int(self.screen_rect.height * 0.34)
+        line_gap = int(clamp(self.screen_rect.height * 0.06, 36, 78))
         for i, (score, username, created_at) in enumerate(self.rows, 1):
             line = f"{i:>2}. {username:<15} — {score} pts"
             surf = self.ui_font.render(line, True, DARK_GREEN)
@@ -460,11 +549,6 @@ class LeaderboardScreen:
         self.back_btn.draw(surface)
 
 class PauseScreen:
-    """
-    Écran d'aide/pause.
-    - show_resume=False : mode aide depuis le MENU -> seul bouton 'Menu'
-    - show_resume=True  : mode pause depuis le JEU  -> 'Reprendre' + 'Menu'
-    """
     def __init__(self, screen_rect, title_font, ui_font):
         self.title_font = title_font
         self.ui_font = ui_font
@@ -473,7 +557,7 @@ class PauseScreen:
         self.menu_btn   = Button(pygame.Rect(0,0,10,10), "Menu",      ui_font, DARK_GREEN, (255,255,255), (60,72,35))
         self.relayout(screen_rect)
         self.lines = [
-            "Déplacements : Flèches directionnelles",
+            "Déplacements : Flèches direction",
             "Pause : P ou bouton Aide    |    Quitter : Échap",
             "Objectif : mangez les pommes pour grandir.",
             "Astuce : ne vous mordez pas la queue !"
@@ -481,11 +565,10 @@ class PauseScreen:
     def relayout(self, r):
         self.screen_rect = r
         w, h = r.size
-        # boutons centrés sous le texte
-        btn_w = int(clamp(w * 0.22, 180, 320))
-        btn_h = int(clamp(h * 0.07,  50,  90))
-        gap_x = int(clamp(w * 0.02, 16, 40))
-        y = int(h * 0.70)
+        btn_w = int(clamp(w * 0.24, 190, 340))
+        btn_h = int(clamp(h * 0.075,  52,  96))
+        gap_x = int(clamp(w * 0.03, 20, 48))
+        y = int(h * 0.72)
         self.resume_btn.set_rect(pygame.Rect(r.centerx - btn_w - gap_x//2, y, btn_w, btn_h))
         self.menu_btn.set_rect(  pygame.Rect(r.centerx + gap_x//2,        y, btn_w, btn_h))
     def apply_fonts(self, title_font, ui_font):
@@ -503,30 +586,36 @@ class PauseScreen:
                 return "RESUME"
         return None
     def draw(self, surface, show_resume: bool):
-        # voile semi-transparent
         overlay = pygame.Surface((self.screen_rect.w, self.screen_rect.h), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 100))
         surface.blit(overlay, (0,0))
-
-        # Titre
         blit_text_with_outline_center(
             surface, "Aide", self.title_font, DARK_GREEN, WHITE,
-            (self.screen_rect.centerx, int(self.screen_rect.height * 0.18)), thickness=3
+            (self.screen_rect.centerx, int(self.screen_rect.height * 0.20)), thickness=3
         )
-        # lignes d'aide (avec contours pour bien ressortir)
-        y = int(self.screen_rect.height * 0.32)
-        gap = int(clamp(self.screen_rect.height * 0.055, 28, 64))
+        y = int(self.screen_rect.height * 0.36)
+        gap = int(clamp(self.screen_rect.height * 0.06, 32, 68))
         for txt in self.lines:
             blit_text_with_outline_center(
                 surface, txt, self.ui_font, DARK_GREEN, WHITE,
                 (self.screen_rect.centerx, y), thickness=2
             )
             y += gap
-
-        # Boutons
         if show_resume:
             self.resume_btn.draw(surface)
         self.menu_btn.draw(surface)
+
+# --- HUD aide en jeu (bouton à droite) ---
+hud_help_btn = Button(pygame.Rect(0,0,10,10), "? Aide", ui_font, DARK_GREEN, (255,255,255), (60,72,35))
+
+def layout_hud_help():
+    w, h = screen_rect.size
+    btn_w = int(clamp(w * 0.12, 110, 180))
+    btn_h = int(clamp(h * 0.06,  44,  70))
+    margin = int(clamp(w * 0.02, 10, 28))
+    x = screen_rect.right - margin - btn_w
+    y = max(margin, int(offset_y * 0.25))
+    hud_help_btn.set_rect(pygame.Rect(x, y, btn_w, btn_h))
 
 # =========================
 #   Instanciation & Layout
@@ -537,24 +626,18 @@ game = Game()
 menu_screen = MenuScreen(screen_rect, title_font, ui_font)
 leader_screen = LeaderboardScreen(screen_rect, title_font, ui_font)
 pause_screen = PauseScreen(screen_rect, title_font, ui_font)
-
-# bouton Aide du HUD en jeu (tout à droite, responsive)
-hud_help_btn = Button(pygame.Rect(0,0,10,10), "? Aide", ui_font, DARK_GREEN, (255,255,255), (60,72,35))
-
-SNAKE_UPDATE = pygame.USEREVENT
-pygame.time.set_timer(SNAKE_UPDATE, 200)
-
-def layout_hud_help():
-    """Place le bouton ? Aide en jeu tout à droite, avec une petite marge responsive."""
-    w, h = screen_rect.size
-    btn_w = int(clamp(w * 0.14, 120, 200))
-    btn_h = int(clamp(h * 0.06,  44,  80))
-    margin = int(clamp(w * 0.02, 10, 28))
-    x = screen_rect.right - margin - btn_w
-    y = max(margin, int(offset_y * 0.25))
-    hud_help_btn.set_rect(pygame.Rect(x, y, btn_w, btn_h))
-
 layout_hud_help()
+
+# =========================
+#    Timer snake (vitesse)
+# =========================
+SNAKE_UPDATE = pygame.USEREVENT
+
+def set_snake_timer(interval_ms: int):
+    pygame.time.set_timer(SNAKE_UPDATE, 0)
+    pygame.time.set_timer(SNAKE_UPDATE, interval_ms)
+
+set_snake_timer(SPEED_INTERVALS[current_speed])
 
 # =========================
 #        Boucle
@@ -600,7 +683,6 @@ while True:
                 leader_screen.load_rows()
                 app_state = "LEADERBOARD"
             elif action == "HELP_MENU":
-                # Aide depuis l'accueil -> pas de bouton Reprendre
                 app_state = "HELP_MENU"
 
         elif app_state == "LEADERBOARD":
@@ -608,7 +690,6 @@ while True:
                 app_state = "MENU"
 
         elif app_state == "PLAYING":
-            # bouton HUD "? Aide" -> pause
             if hud_help_btn.is_clicked(event):
                 app_state = "PAUSED"
             if event.type == SNAKE_UPDATE:
@@ -616,16 +697,13 @@ while True:
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_p:
                     app_state = "PAUSED"
-                if game.state == "STOPPED":
-                    game.state = "PLAYING"
+                if game.state == "STOPPED": game.state = "PLAYING"
                 if event.key == pygame.K_UP    and game.snake.direction != Vector2(0, 1):  game.snake.direction = Vector2(0, -1)
                 if event.key == pygame.K_DOWN  and game.snake.direction != Vector2(0,-1): game.snake.direction = Vector2(0, 1)
                 if event.key == pygame.K_LEFT  and game.snake.direction != Vector2(1, 0):  game.snake.direction = Vector2(-1, 0)
                 if event.key == pygame.K_RIGHT and game.snake.direction != Vector2(-1,0): game.snake.direction = Vector2(1, 0)
 
         elif app_state in ("PAUSED", "HELP_MENU"):
-            # PAUSED : depuis le jeu -> Resume + Menu
-            # HELP_MENU : depuis le menu -> seulement Menu
             show_resume = (app_state == "PAUSED")
             nav = pause_screen.handle_event(event, show_resume=show_resume)
             if nav == "RESUME":
@@ -652,15 +730,12 @@ while True:
         leader_screen.draw(screen)
 
     elif app_state == "PLAYING":
-        # cadre du board
         pygame.draw.rect(
             screen, DARK_GREEN,
             (offset_x - 5, offset_y - 5, board_size + 10, board_size + 10),
             5
         )
         game.draw()
-
-        # HUD (titre + score) avec contour blanc, hors de la grille
         hud_y = max(10, int(offset_y * 0.6))
         blit_text_with_outline_topleft(
             screen, "Snake Game", title_font, DARK_GREEN, WHITE,
@@ -670,12 +745,9 @@ while True:
             screen, str(game.score), score_font, DARK_GREEN, WHITE,
             screen_rect.w - offset_x, hud_y, thickness=3
         )
-
-        # bouton ? Aide du HUD (tout à droite)
         hud_help_btn.draw(screen)
 
     elif app_state in ("PAUSED", "HELP_MENU"):
-        # Si on vient du jeu, on peut garder la grille visible sous l'overlay pour le contexte
         if app_state == "PAUSED":
             pygame.draw.rect(
                 screen, DARK_GREEN,
@@ -691,8 +763,6 @@ while True:
                 screen, str(game.score), score_font, DARK_GREEN, WHITE,
                 screen_rect.w - offset_x, hud_y, thickness=3
             )
-
-        # Overlay d'aide (show_resume selon le contexte)
         pause_screen.draw(screen, show_resume=(app_state == "PAUSED"))
 
     pygame.display.update()
