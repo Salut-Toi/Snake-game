@@ -4,6 +4,9 @@ import os
 
 pygame.init()
 
+title_font = pygame.font.Font(None, 60)
+score_font = pygame.font.Font(None, 40)
+
 GREEN = (173, 204, 96)
 DARK_GREEN = (43, 51, 24)
 
@@ -38,9 +41,10 @@ class Food:
 
     def draw(self):
         # conversion grille -> pixels
-        x = int(self.position.x) * cell_size
-        y = int(self.position.y) * cell_size
+        x = int(self.position.x * cell_size + offset)
+        y = int(self.position.y * cell_size + offset)
         screen.blit(food_surface, (x, y))
+
 
     def generate_random_cell(self):
         x = random.randint(0, number_of_cells - 1)
@@ -61,7 +65,7 @@ class Snake:
         
     def draw(self):
         for segment in self.body:
-            segment_rect = (segment.x * cell_size, segment.y * cell_size, cell_size, cell_size)
+            segment_rect = (offset + segment.x * cell_size, offset + segment.y * cell_size, cell_size, cell_size)
             pygame.draw.rect(screen, DARK_GREEN, segment_rect, 0, 6)
 
     def update(self):
@@ -80,6 +84,7 @@ class Game:
         self.snake = Snake()
         self.food = Food(self.snake.body)  
         self.state = "PLAYING"
+        self.score = 0
 
     def draw(self):
         self.snake.draw()
@@ -96,6 +101,7 @@ class Game:
         if self.snake.body[0] == self.food.position:
             self.food.position = self.food.generate_random_position(self.snake.body)
             self.snake.new_block = True
+            self.score += 1
 
     def check_fail(self):
         if self.snake.body[0].x == number_of_cells or self.snake.body[0].x == -1:
@@ -107,6 +113,7 @@ class Game:
         self.snake.reset()
         self.food.position = self.food.generate_random_position(self.snake.body)
         self.state = "STOPPED"
+        self.score = 0
 
     def check_self_collision(self):
         headless_body = self.snake.body[1:]
@@ -139,5 +146,11 @@ while True:
     screen.fill(GREEN)
     pygame.draw.rect(screen, DARK_GREEN, (offset-5, offset-5, cell_size*number_of_cells+10, cell_size*number_of_cells+10), 5)
     game.draw()
+    title_surface = title_font.render("Snake Game", True, DARK_GREEN)
+    score_surface = score_font.render(str (game.score), True, DARK_GREEN)
+    screen.blit(title_surface, (offset-5, 20))
+    screen_width = cell_size * number_of_cells + offset * 2
+    score_rect = score_surface.get_rect(topright=(screen_width - offset, 20))
+    screen.blit(score_surface, score_rect)
     pygame.display.update()
     clock.tick(60)
