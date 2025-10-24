@@ -500,7 +500,6 @@ class LeaderboardScreen:
         self.screen_rect = screen_rect
         self.rows = []
         self.current_period = "daily"  # jour/weekly/monthly
-        # Filtres
         self.filter_speed = "all"      # all/facile/normal/difficile
         self.filter_wrap  = "all"      # all/on/off
 
@@ -520,7 +519,9 @@ class LeaderboardScreen:
         self.wrap_on_btn  = Button(pygame.Rect(0,0,10,10), "Bords ON", ui_font, DARK_GREEN, (255,255,255), (60,72,35))
         self.wrap_off_btn = Button(pygame.Rect(0,0,10,10), "Bords OFF", ui_font, DARK_GREEN, (255,255,255), (60,72,35))
 
-        self.back_btn    = Button(pygame.Rect(0,0,10,10), "Retour",   ui_font, DARK_GREEN, (255,255,255), (60,72,35))
+        # --- Bouton Menu visible en bas ---
+        self.back_btn    = Button(pygame.Rect(0,0,10,10), "Menu", ui_font, DARK_GREEN, (255,255,255), (60,72,35))
+
         self.relayout(screen_rect)
         self.load_rows()
 
@@ -564,9 +565,13 @@ class LeaderboardScreen:
         self._layout_period_buttons(w, h)
         self._layout_speed_filters(w, h)
         self._layout_wrap_filters(w, h)
+        # Bouton Menu toujours visible
         btn_w = int(clamp(w * 0.20, 170, 340))
         btn_h = int(clamp(h * 0.07, 50, 90))
-        self.back_btn.set_rect(pygame.Rect(r.centerx - btn_w // 2, h - btn_h - int(h * 0.06), btn_w, btn_h))
+        margin_bottom = int(clamp(h * 0.05, 20, 60))
+        x = r.centerx - btn_w // 2
+        y = h - btn_h - margin_bottom
+        self.back_btn.set_rect(pygame.Rect(x, y, btn_w, btn_h))
 
     def apply_fonts(self, title_font, ui_font):
         self.title_font = title_font
@@ -603,29 +608,18 @@ class LeaderboardScreen:
     def _wrap_to_bool(self):
         if self.filter_wrap == "on":  return True
         if self.filter_wrap == "off": return False
-        return None  # all
+        return None
 
     def load_rows(self):
-        # essaie d’appeler une leaderboard filtrée si dispo
         wrap_bool = self._wrap_to_bool()
         speed_mode = None if self.filter_speed == "all" else self.filter_speed
         try:
-            # nouvelle signature potentielle : leaderboard(period, limit, speed_mode=None, wrap_walls=None)
             self.rows = db.leaderboard(self.current_period, 10, speed_mode=speed_mode, wrap_walls=wrap_bool)
-        except TypeError:
-            # rétro : sans filtres (au pire on récupère tout-période)
+        except Exception:
             try:
                 self.rows = db.leaderboard(self.current_period, 10)
             except Exception:
-                # fallback ultime : top_scores si disponible
-                try:
-                    self.rows = db.top_scores(10)
-                except Exception as e:
-                    print("Erreur leaderboard:", e)
-                    self.rows = []
-        except Exception as e:
-            print("Erreur leaderboard:", e)
-            self.rows = []
+                self.rows = []
 
     def draw(self, surface):
         # Titre
@@ -633,6 +627,7 @@ class LeaderboardScreen:
             surface, "Classements", self.title_font, DARK_GREEN, WHITE,
             (self.screen_rect.centerx, int(self.screen_rect.height * 0.08)), thickness=3
         )
+
         # Périodes
         for b, active in [
             (self.daily_btn,   self.current_period == "daily"),
@@ -658,7 +653,7 @@ class LeaderboardScreen:
         ]:
             b.draw(surface, override_bg=self._active_col(active))
 
-               # === Tableau des scores : 2 colonnes responsive ===
+        # === Tableau des scores : 2 colonnes ===
         y_start = int(self.screen_rect.height * 0.38)
         line_gap = int(clamp(self.screen_rect.height * 0.06, 34, 70))
 
@@ -670,31 +665,25 @@ class LeaderboardScreen:
             half = (total + 1) // 2
             col1 = self.rows[:half]
             col2 = self.rows[half:]
-
-            # Positionnement horizontal responsive (deux colonnes équilibrées)
-            # Elles se rapprochent si la fenêtre est petite, s’écartent si grande
             col_gap = int(clamp(self.screen_rect.width * 0.35, 250, 500))
             x_left = self.screen_rect.centerx - col_gap // 2
             x_right = self.screen_rect.centerx + col_gap // 2
-
-            # Position verticale de départ
             y1 = y2 = y_start
-
-            # Colonne 1
             for i, (score, username, created_at) in enumerate(col1, 1):
                 line = f"{i}. {username} — {score} pts"
                 surf = self.ui_font.render(line, True, DARK_GREEN)
                 rect = surf.get_rect(midtop=(x_left, y1))
                 surface.blit(surf, rect)
                 y1 += line_gap
-
-            # Colonne 2 (numéros consécutifs)
             for j, (score, username, created_at) in enumerate(col2, half + 1):
                 line = f"{j}. {username} — {score} pts"
                 surf = self.ui_font.render(line, True, DARK_GREEN)
                 rect = surf.get_rect(midtop=(x_right, y2))
                 surface.blit(surf, rect)
                 y2 += line_gap
+
+        # --- Bouton Menu (toujours visible) ---
+        self.back_btn.draw(surface)
 
 class PauseScreen:
     def __init__(self, screen_rect, title_font, ui_font):
