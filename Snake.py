@@ -2,192 +2,179 @@ import pygame, sys, random, os
 from pygame.math import Vector2
 import db
 
-# === DB ===
+# --- DB ---
 db.init_db()
 
-# === Joueur courant ===
+# --- Joueur courant ---
 current_player_id = None
 current_player_name = None
 
 pygame.init()
 
-# === Couleurs ===
+# --- Couleurs ---
 GREEN = (173, 204, 96)
 DARK_GREEN = (43, 51, 24)
+WHITE = (255, 255, 255)
 
-# === Paramètres grille de base ===
-number_of_cells = 25           # 25x25
-offset_cells = 2.5             # marge autour du plateau (en "cellules")
-cell_size = 30                 # taille initiale d'une cellule (variera avec la fenêtre)
-offset_px = int(offset_cells * cell_size)
+# --- Grille ---
+number_of_cells = 25
+GRID_SCALE = 0.86   # la grille prend ~86% du côté court -> marge pour HUD
 
-# === Fenêtre (créée AVANT le chargement des images) ===
-def compute_initial_window():
-    side = int(round((number_of_cells + 2 * offset_cells) * cell_size))
-    return side, side
-
-BASE_W, BASE_H = compute_initial_window()  # sert de référence pour le scale de l'UI
-screen = pygame.display.set_mode((BASE_W, BASE_H), pygame.RESIZABLE)
+# --- Fenêtre initiale ---
+BASE_SIDE = 900
+screen = pygame.display.set_mode((BASE_SIDE, BASE_SIDE), pygame.RESIZABLE)
 pygame.display.set_caption("Snake Game")
 clock = pygame.time.Clock()
 screen_rect = screen.get_rect()
 
-# === Chargement images APRÈS ouverture de la fenêtre ===
+# --- Images ---
 base_path = os.path.dirname(__file__)
 
-# Pomme
 apple_path = os.path.join(base_path, "images", "apple.png")
 apple_raw = pygame.image.load(apple_path).convert_alpha()
-bg = apple_raw.get_at((0, 0))
-apple_raw.set_colorkey(bg)
+apple_raw.set_colorkey(apple_raw.get_at((0, 0)))
 
-# Logo menu (optionnel)
 logo_path = r"C:\Users\kyman\Snake-game\images\snake.png"
 logo_raw = pygame.image.load(logo_path).convert_alpha() if os.path.exists(logo_path) else None
 
-# Bordure décorative
 border_path = os.path.join(base_path, "images", "border.png")
 border_raw = pygame.image.load(border_path).convert_alpha() if os.path.exists(border_path) else None
 
-# Si ta bordure source fait 1024x1024 et que la "fenêtre" intérieure libre est décalée de ~128 px
-# depuis chaque bord, mets 128 ici. Ajuste si nécessaire pour coller pile à ton asset.
-BORDER_INSET_SRC = 128  # <-- ajuste ce chiffre si le feuillage est plus/moins épais dans ton PNG
+# Décor : si border.png fait 1024x1024 et que l’ouverture intérieure démarre à 128px :
+BORDER_INSET_SRC = 128
+BORDER_OVERSHOOT = 1.08
 
-# === Polices (seront régénérées selon le scale) ===
 def clamp(v, lo, hi): return max(lo, min(hi, v))
 
 def make_fonts(scale: float):
-    title_size = int(clamp(72 * scale, 36, 120))
-    score_size = int(clamp(40 * scale, 24, 72))
-    ui_size    = int(clamp(38 * scale, 22, 56))
-    return (
-        pygame.font.Font(None, title_size),
-        pygame.font.Font(None, score_size),
-        pygame.font.Font(None, ui_size),
-    )
+    title = int(clamp(72 * scale, 36, 120))
+    score = int(clamp(40 * scale, 24, 72))
+    ui    = int(clamp(38 * scale, 22, 56))
+    return (pygame.font.Font(None, title),
+            pygame.font.Font(None, score),
+            pygame.font.Font(None, ui))
 
-# init polices
 title_font, score_font, ui_font = make_fonts(1.0)
 
-# === Surfaces dépendantes de la taille ===
+# --- Tailles dynamiques ---
+cell_size = 30
+board_size = cell_size * number_of_cells
+offset_x = (screen_rect.w - board_size) // 2
+offset_y = (screen_rect.h - board_size) // 2
+
+# --- Surfaces dépendantes ---
 food_surface = None
 logo_surface = None
 
 def rescale_assets():
-    """Redimensionne les surfaces selon la taille de la cellule."""
     global food_surface, logo_surface
     food_surface = pygame.transform.smoothscale(apple_raw, (cell_size, cell_size))
     if logo_raw:
-        logo_side = int(clamp(cell_size * 5, 80, 260))  # logo ~5 cellules
-        logo_surface = pygame.transform.smoothscale(logo_raw, (logo_side, logo_side))
+        side = int(clamp(cell_size * 5, 80, 260))
+        logo_surface = pygame.transform.smoothscale(logo_raw, (side, side))
     else:
         logo_surface = None
 
-# --- Calcul du placement/zoom de la bordure ---
+def compute_layout_for_window(w, h):
+    """Grille réduite (GRID_SCALE), centrée ; polices échelonnées ; assets rescalés."""
+    global cell_size, board_size, offset_x, offset_y, title_font, score_font, ui_font
+    usable_side = int(min(w, h) * GRID_SCALE)
+    cell_size = max(12, usable_side // number_of_cells)
+    board_size = cell_size * number_of_cells
+    offset_x = (w - board_size) // 2
+    offset_y = (h - board_size) // 2
+    scale_ui = min(w / BASE_SIDE, h / BASE_SIDE)
+    title_font, score_font, ui_font = make_fonts(scale_ui)
+    rescale_assets()
+
 def compute_border_target_rect():
-    """Calcule le rectangle destination de la bordure pour que sa 'fenêtre' interne
-       corresponde exactement au plateau (board)."""
+    """Rect du décor tel que son ouverture colle au board (offset_x/y, board_size)."""
     if not border_raw:
         return None
     W, H = border_raw.get_size()
     inset = BORDER_INSET_SRC
-    board_size = cell_size * number_of_cells
-    # On veut: (W - 2*inset) * s == board_size  => s:
     s_x = board_size / (W - 2*inset)
     s_y = board_size / (H - 2*inset)
-    s = min(s_x, s_y)  # par sécurité si pas parfaitement carré
+    s = min(s_x, s_y) * BORDER_OVERSHOOT
     dest_w = int(W * s)
     dest_h = int(H * s)
-    x = int(offset_px - inset * s)
-    y = int(offset_px - inset * s)
+    x = int(offset_x - inset * s)
+    y = int(offset_y - inset * s)
     return pygame.Rect(x, y, dest_w, dest_h)
 
 def screen_fit_rect():
-    return pygame.Rect(0, 0, screen_rect.width, screen_rect.height)
+    return pygame.Rect(0, 0, screen_rect.w, screen_rect.h)
 
-def lerp(a, b, t): return a + (b - a) * t
-def lerp_rect(r1, r2, t):
-    return pygame.Rect(int(lerp(r1.x, r2.x, t)),
-                       int(lerp(r1.y, r2.y, t)),
-                       int(lerp(r1.w, r2.w, t)),
-                       int(lerp(r1.h, r2.h, t)))
-
-border_current_rect = screen_fit_rect()
-border_target_rect  = compute_border_target_rect()
-
-# Animation
-ZOOM_DURATION_MS = 650
-zoom_start_ms = None
-
-def start_border_zoom():
-    global app_state, zoom_start_ms, border_current_rect, border_target_rect
-    zoom_start_ms = pygame.time.get_ticks()
-    border_current_rect = screen_fit_rect()
-    border_target_rect  = compute_border_target_rect()
-    app_state = "ZOOMING"
-
-def draw_border_at_rect(rect: pygame.Rect):
+def draw_border_at_rect(rect):
     if not border_raw or rect is None:
         return
     scaled = pygame.transform.smoothscale(border_raw, (rect.w, rect.h))
     screen.blit(scaled, rect.topleft)
 
-def update_scaling_for_window(w, h):
-    """Recalcule cell_size/offset_px selon la taille de la fenêtre et rescale l'UI + bordure."""
-    global cell_size, offset_px, title_font, score_font, ui_font, border_target_rect, border_current_rect
-    denom = (number_of_cells + 2 * offset_cells)
-    new_cell = max(12, int(min(w, h) / denom))
-    if new_cell != cell_size:
-        cell_size = new_cell
-        offset_px = int(round(offset_cells * cell_size))
-        rescale_assets()
-    # scale UI par rapport à la taille de fenêtre actuelle vs base
-    scale_ui = min(w / BASE_W, h / BASE_H)
-    title_font, score_font, ui_font = make_fonts(scale_ui)
-    # recalcul de la cible bordure
-    border_target_rect = compute_border_target_rect()
-    # si on est en PLAYING, caler le rect courant sur la cible
-    if app_state == "PLAYING":
-        border_current_rect = border_target_rect.copy() if border_target_rect else None
-    else:
-        border_current_rect = screen_fit_rect()
+def draw_fullscreen_border_with_board_hole():
+    """Bordure plein écran + trou central (zone de jeu) peinte en vert champ."""
+    if not border_raw:
+        return
+    draw_border_at_rect(screen_fit_rect())
+    pygame.draw.rect(screen, GREEN, (offset_x, offset_y, board_size, board_size))
 
-# premières surfaces
-rescale_assets()
+# --- Texte avec contour ---
+def blit_text_with_outline_topleft(surface, text, font, main_color, outline_color, x, y, thickness=2):
+    base = font.render(text, True, main_color)
+    outline = font.render(text, True, outline_color)
+    for dx in (-thickness, 0, thickness):
+        for dy in (-thickness, 0, thickness):
+            if dx == 0 and dy == 0: continue
+            surface.blit(outline, (x + dx, y + dy))
+    surface.blit(base, (x, y))
+
+def blit_text_with_outline_topright(surface, text, font, main_color, outline_color, x, y, thickness=2):
+    base = font.render(text, True, main_color)
+    outline = font.render(text, True, outline_color)
+    base_rect = base.get_rect(topright=(x, y))
+    for dx in (-thickness, 0, thickness):
+        for dy in (-thickness, 0, thickness):
+            if dx == 0 and dy == 0: continue
+            r = outline.get_rect(topright=(x + dx, y + dy))
+            surface.blit(outline, r.topleft)
+    surface.blit(base, base_rect.topleft)
+
+def blit_text_with_outline_center(surface, text, font, main_color, outline_color, center, thickness=2):
+    base = font.render(text, True, main_color)
+    outline = font.render(text, True, outline_color)
+    rect = base.get_rect(center=center)
+    for dx in (-thickness, 0, thickness):
+        for dy in (-thickness, 0, thickness):
+            if dx == 0 and dy == 0: continue
+            r = outline.get_rect(center=(center[0] + dx, center[1] + dy))
+            surface.blit(outline, r)
+    surface.blit(base, rect)
+
+# --- États ---
+app_state = "MENU"  # MENU | PLAYING | LEADERBOARD
 
 # =========================
-#        UI Widgets
+#        UI
 # =========================
 class Button:
-    def __init__(self, rect, text, font, bg_color, text_color,
-                 hover_color=None, radius=10):
+    def __init__(self, rect, text, font, bg_color, text_color, hover_color=None, radius=10):
         self.rect = pygame.Rect(rect)
         self.text = text
         self.font = font
-        self.bg_color = bg_color
-        self.text_color = text_color
-        self.hover_color = hover_color or bg_color
+        self.bg = bg_color
+        self.fg = text_color
+        self.hover = hover_color or bg_color
         self.radius = radius
-
-    def set_rect(self, rect):
-        self.rect = pygame.Rect(rect)
-
-    def set_font(self, font):
-        self.font = font
-
+    def set_rect(self, rect): self.rect = pygame.Rect(rect)
+    def set_font(self, font): self.font = font
     def draw(self, surface):
-        mouse_pos = pygame.mouse.get_pos()
-        color = self.hover_color if self.rect.collidepoint(mouse_pos) else self.bg_color
+        mouse = pygame.mouse.get_pos()
+        color = self.hover if self.rect.collidepoint(mouse) else self.bg
         pygame.draw.rect(surface, color, self.rect, border_radius=self.radius)
-        label = self.font.render(self.text, True, self.text_color)
+        label = self.font.render(self.text, True, self.fg)
         surface.blit(label, label.get_rect(center=self.rect.center))
-
     def is_clicked(self, event):
-        return (
-            event.type == pygame.MOUSEBUTTONDOWN
-            and event.button == 1
-            and self.rect.collidepoint(event.pos)
-        )
+        return event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and self.rect.collidepoint(event.pos)
 
 class TextInput:
     def __init__(self, rect, font, text_color, bg_color, border_color,
@@ -203,13 +190,8 @@ class TextInput:
         self.active = False
         self.cursor_visible = True
         self.cursor_timer = 0
-
-    def set_rect(self, rect):
-        self.rect = pygame.Rect(rect)
-
-    def set_font(self, font):
-        self.font = font
-
+    def set_rect(self, rect): self.rect = pygame.Rect(rect)
+    def set_font(self, font): self.font = font
     def handle_event(self, event):
         if event.type == pygame.MOUSEBUTTONDOWN:
             self.active = self.rect.collidepoint(event.pos)
@@ -223,26 +205,20 @@ class TextInput:
                     if len(self.text) < 20:
                         self.text += event.unicode
         return None
-
-    def update(self, dt_ms):
-        self.cursor_timer += dt_ms
+    def update(self, dt):
+        self.cursor_timer += dt
         if self.cursor_timer > 500:
             self.cursor_visible = not self.cursor_visible
             self.cursor_timer = 0
-
     def draw(self, surface):
         pygame.draw.rect(surface, self.bg_color, self.rect, border_radius=self.radius)
         pygame.draw.rect(surface, self.border_color, self.rect, width=2, border_radius=self.radius)
-        if self.text:
-            label = self.font.render(self.text, True, self.text_color)
-        else:
-            label = self.font.render(self.placeholder, True, (120, 120, 120))
+        label = self.font.render(self.text or self.placeholder, True,
+                                 self.text_color if self.text else (120,120,120))
         surface.blit(label, (self.rect.x + 10, self.rect.y + (self.rect.height - label.get_height()) // 2))
-        if self.active and self.cursor_visible:
-            cursor_x = self.rect.x + 10 + (self.font.size(self.text)[0] if self.text else 0)
-            cursor_y = self.rect.y + 8
-            pygame.draw.line(surface, self.text_color, (cursor_x, cursor_y),
-                             (cursor_x, self.rect.bottom - 8), 2)
+        if self.active and self.cursor_visible and self.text:
+            cx = self.rect.x + 10 + self.font.size(self.text)[0]
+            pygame.draw.line(surface, self.text_color, (cx, self.rect.y + 8), (cx, self.rect.bottom - 8), 2)
 
 # =========================
 #         Jeu
@@ -250,45 +226,36 @@ class TextInput:
 class Food:
     def __init__(self, snake_body):
         self.position = self.generate_random_position(snake_body)
-
     def draw(self):
-        x = int(self.position.x * cell_size + offset_px)
-        y = int(self.position.y * cell_size + offset_px)
+        x = int(self.position.x * cell_size + offset_x)
+        y = int(self.position.y * cell_size + offset_y)
         screen.blit(food_surface, (x, y))
-
     def generate_random_cell(self):
-        x = random.randint(0, number_of_cells - 1)
-        y = random.randint(0, number_of_cells - 1)
-        return Vector2(x, y)
-
+        return Vector2(random.randint(0, number_of_cells - 1),
+                       random.randint(0, number_of_cells - 1))
     def generate_random_position(self, snake_body):
-        position = self.generate_random_cell()
-        while position in snake_body:
-            position = self.generate_random_cell()
-        return position
+        p = self.generate_random_cell()
+        while p in snake_body:
+            p = self.generate_random_cell()
+        return p
 
 class Snake:
     def __init__(self):
         self.body = [Vector2(6, 9), Vector2(5, 9), Vector2(4, 9)]
         self.direction = Vector2(1, 0)
         self.new_block = False
-
     def draw(self):
         for segment in self.body:
-            segment_rect = (
-                offset_px + segment.x * cell_size,
-                offset_px + segment.y * cell_size,
-                cell_size, cell_size
-            )
-            pygame.draw.rect(screen, DARK_GREEN, segment_rect, 0, 6)
-
+            rect = (offset_x + segment.x * cell_size,
+                    offset_y + segment.y * cell_size,
+                    cell_size, cell_size)
+            pygame.draw.rect(screen, DARK_GREEN, rect, 0, 6)
     def update(self):
         self.body.insert(0, self.body[0] + self.direction)
-        if self.new_block:
-            self.new_block = False
-        else:
+        if not self.new_block:
             self.body = self.body[:-1]
-
+        else:
+            self.new_block = False
     def reset(self):
         self.body = [Vector2(6, 9), Vector2(5, 9), Vector2(4, 9)]
         self.direction = Vector2(1, 0)
@@ -299,101 +266,83 @@ class Game:
         self.food = Food(self.snake.body)
         self.state = "STOPPED"
         self.score = 0
-
     def draw(self):
         self.snake.draw()
         self.food.draw()
-
     def update(self):
         if self.state == "PLAYING":
             self.snake.update()
             self.check_collision_with_food()
             self.check_fail()
             self.check_self_collision()
-
     def check_collision_with_food(self):
         if self.snake.body[0] == self.food.position:
             self.food.position = self.food.generate_random_position(self.snake.body)
             self.snake.new_block = True
             self.score += 1
-
     def check_fail(self):
-        if self.snake.body[0].x in (-1, number_of_cells) or self.snake.body[0].y in (-1, number_of_cells):
+        h = self.snake.body[0]
+        if h.x in (-1, number_of_cells) or h.y in (-1, number_of_cells):
             self.game_over()
-
+    def check_self_collision(self):
+        if self.snake.body[0] in self.snake.body[1:]:
+            self.game_over()
     def game_over(self):
-        global current_player_id, app_state, border_current_rect, border_target_rect
+        global app_state
         try:
-            db.record_run(score=self.score, player_id=current_player_id)
+            db.record_run(self.score, current_player_id)
         except Exception as e:
             print("DB error:", e)
         self.snake.reset()
         self.food.position = self.food.generate_random_position(self.snake.body)
         self.state = "STOPPED"
         self.score = 0
-        # revenir au menu et remettre la bordure en "plein écran"
-        border_current_rect = screen_fit_rect()
-        border_target_rect  = compute_border_target_rect()
         app_state = "MENU"
 
-    def check_self_collision(self):
-        headless_body = self.snake.body[1:]
-        if self.snake.body[0] in headless_body:
-            self.game_over()
-
 # =========================
-#       Écrans UI
+#        Écrans
 # =========================
 class MenuScreen:
-    def __init__(self, screen_rect, title_font, ui_font, DARK_GREEN, GREEN):
-        self.DARK_GREEN = DARK_GREEN
-        self.GREEN = GREEN
+    def __init__(self, screen_rect, title_font, ui_font):
         self.title_font = title_font
         self.ui_font = ui_font
         self.screen_rect = screen_rect
-
-        # Widgets (rects définis dans relayout)
-        self.input = TextInput(pygame.Rect(0, 0, 10, 10), ui_font, DARK_GREEN, (240, 245, 230), DARK_GREEN)
-        self.start_btn = Button(pygame.Rect(0, 0, 10, 10), "Démarrer", ui_font, DARK_GREEN, (255,255,255), (60,72,35))
-        self.leader_btn = Button(pygame.Rect(0, 0, 10, 10), "Leaderboard", ui_font, DARK_GREEN, (255,255,255), (60,72,35))
+        self.input = TextInput(pygame.Rect(0,0,10,10), ui_font, DARK_GREEN, (240,245,230), DARK_GREEN)
+        self.start_btn = Button(pygame.Rect(0,0,10,10), "Démarrer", ui_font, DARK_GREEN, (255,255,255), (60,72,35))
+        self.leader_btn= Button(pygame.Rect(0,0,10,10), "Leaderboard", ui_font, DARK_GREEN, (255,255,255), (60,72,35))
         self.message = ""
         self.relayout(screen_rect)
-
-    def relayout(self, screen_rect):
-        self.screen_rect = screen_rect
-        w, h = screen_rect.size
+    def relayout(self, r):
+        self.screen_rect = r
+        w, h = r.size
         input_w = int(clamp(w * 0.5, 320, 720))
         input_h = int(clamp(h * 0.06, 40, 90))
         center_y = int(h * 0.5)
-        self.input.set_rect(pygame.Rect(screen_rect.centerx - input_w // 2, center_y, input_w, input_h))
+        self.input.set_rect(pygame.Rect(r.centerx - input_w // 2, center_y, input_w, input_h))
         btn_w = int(clamp(w * 0.32, 220, 420))
         btn_h = int(clamp(h * 0.07, 50, 100))
-        self.start_btn.set_rect(pygame.Rect(screen_rect.centerx - btn_w // 2, center_y + int(h*0.10), btn_w, btn_h))
-        self.leader_btn.set_rect(pygame.Rect(screen_rect.centerx - btn_w // 2, center_y + int(h*0.20), btn_w, btn_h))
-
+        self.start_btn.set_rect(pygame.Rect(r.centerx - btn_w // 2, center_y + int(h * 0.10), btn_w, btn_h))
+        self.leader_btn.set_rect(pygame.Rect(r.centerx - btn_w // 2, center_y + int(h * 0.20), btn_w, btn_h))
     def apply_fonts(self, title_font, ui_font):
         self.title_font = title_font
         self.ui_font = ui_font
         self.input.set_font(ui_font)
         self.start_btn.set_font(ui_font)
         self.leader_btn.set_font(ui_font)
-
     def handle_event(self, event):
-        submit = self.input.handle_event(event)
-        if submit == "submit":
-            return ("START", self.input.text.strip() or None)
-        if self.start_btn.is_clicked(event):
-            return ("START", self.input.text.strip() or None)
-        if self.leader_btn.is_clicked(event):
-            return ("LEADERBOARD", None)
+        s = self.input.handle_event(event)
+        if s == "submit": return ("START", self.input.text.strip() or None)
+        if self.start_btn.is_clicked(event): return ("START", self.input.text.strip() or None)
+        if self.leader_btn.is_clicked(event): return ("LEADERBOARD", None)
         return (None, None)
-
-    def update(self, dt_ms):
-        self.input.update(dt_ms)
-
+    def update(self, dt): self.input.update(dt)
     def draw(self, surface):
-        title_surf = self.title_font.render("Snake Game", True, self.DARK_GREEN)
-        surface.blit(title_surf, title_surf.get_rect(midtop=(self.screen_rect.centerx, int(self.screen_rect.height * 0.12))))
+        # Titre centré avec contour blanc
+        blit_text_with_outline_center(
+            surface, "Snake Game", self.title_font, DARK_GREEN, WHITE,
+            (self.screen_rect.centerx, int(self.screen_rect.height * 0.12)), thickness=3
+        )
+        # Logo
         if logo_surface:
             logo_rect = logo_surface.get_rect(center=(self.screen_rect.centerx, self.input.rect.top - int(self.screen_rect.height * 0.12)))
             surface.blit(logo_surface, logo_rect)
@@ -405,82 +354,130 @@ class MenuScreen:
             surface.blit(m, m.get_rect(midtop=(self.screen_rect.centerx, self.input.rect.bottom + 10)))
 
 class LeaderboardScreen:
-    def __init__(self, screen_rect, title_font, ui_font, DARK_GREEN, GREEN):
-        self.DARK_GREEN = DARK_GREEN
-        self.GREEN = GREEN
+    def __init__(self, screen_rect, title_font, ui_font):
         self.title_font = title_font
         self.ui_font = ui_font
         self.screen_rect = screen_rect
         self.rows = []
-        self.back_btn = Button(pygame.Rect(0, 0, 10, 10), "Retour", ui_font, DARK_GREEN, (255,255,255), (60,72,35))
-        self.relayout(screen_rect)
+        self.current_period = "daily"  # par défaut : jour
 
-    def relayout(self, screen_rect):
-        self.screen_rect = screen_rect
-        w, h = screen_rect.size
+        # Crée des boutons ; placement fait dans relayout()
+        self.daily_btn   = Button(pygame.Rect(0,0,10,10), "Jour",     ui_font, DARK_GREEN, (255,255,255), (60,72,35))
+        self.weekly_btn  = Button(pygame.Rect(0,0,10,10), "Semaine",  ui_font, DARK_GREEN, (255,255,255), (60,72,35))
+        self.monthly_btn = Button(pygame.Rect(0,0,10,10), "Mois",     ui_font, DARK_GREEN, (255,255,255), (60,72,35))
+        self.back_btn    = Button(pygame.Rect(0,0,10,10), "Retour",   ui_font, DARK_GREEN, (255,255,255), (60,72,35))
+
+        self.relayout(screen_rect)
+        self.load_rows()
+
+    def _layout_period_buttons(self, w, h):
+        """Centre les 3 boutons période en haut du leaderboard."""
+        btn_w = int(clamp(w * 0.16, 150, 240))
+        btn_h = int(clamp(h * 0.07,  48,  88))
+        spacing = int(clamp(w * 0.02, 12, 28))
+        y_base = int(h * 0.16)
+
+        total_width = 3 * btn_w + 2 * spacing
+        start_x = (w - total_width) // 2
+
+        self.daily_btn.set_rect(  pygame.Rect(start_x,                       y_base, btn_w, btn_h))
+        self.weekly_btn.set_rect( pygame.Rect(start_x + btn_w + spacing,     y_base, btn_w, btn_h))
+        self.monthly_btn.set_rect(pygame.Rect(start_x + 2*(btn_w + spacing), y_base, btn_w, btn_h))
+
+    def relayout(self, r):
+        self.screen_rect = r
+        w, h = r.size
+        self._layout_period_buttons(w, h)
+
         btn_w = int(clamp(w * 0.18, 160, 320))
         btn_h = int(clamp(h * 0.06, 44, 90))
-        self.back_btn.set_rect(pygame.Rect(screen_rect.centerx - btn_w // 2, h - btn_h - int(h*0.05), btn_w, btn_h))
+        self.back_btn.set_rect(pygame.Rect(r.centerx - btn_w // 2, h - btn_h - int(h * 0.05), btn_w, btn_h))
 
     def apply_fonts(self, title_font, ui_font):
         self.title_font = title_font
         self.ui_font = ui_font
-        self.back_btn.set_font(ui_font)
-
-    def load_rows(self):
-        self.rows = db.top_scores(10)
+        for b in (self.daily_btn, self.weekly_btn, self.monthly_btn, self.back_btn):
+            b.set_font(ui_font)
 
     def handle_event(self, event):
         if self.back_btn.is_clicked(event):
             return "BACK"
+        if self.daily_btn.is_clicked(event):
+            self.current_period = "daily";  self.load_rows()
+        if self.weekly_btn.is_clicked(event):
+            self.current_period = "weekly"; self.load_rows()
+        if self.monthly_btn.is_clicked(event):
+            self.current_period = "monthly"; self.load_rows()
         return None
 
+    def load_rows(self):
+        try:
+            self.rows = db.leaderboard(self.current_period, 10)
+        except Exception as e:
+            print("Erreur leaderboard:", e)
+            self.rows = []
+
     def draw(self, surface):
-        title = self.title_font.render("Top 10 des Scores", True, self.DARK_GREEN)
-        surface.blit(title, title.get_rect(midtop=(self.screen_rect.centerx, int(self.screen_rect.height * 0.10))))
-        y = int(self.screen_rect.height * 0.22)
+        # Titre centré avec contour blanc
+        blit_text_with_outline_center(
+            surface, "Classements", self.title_font, DARK_GREEN, WHITE,
+            (self.screen_rect.centerx, int(self.screen_rect.height * 0.08)), thickness=3
+        )
+
+        # Boutons période (actif en vert plus clair)
+        for b in (self.daily_btn, self.weekly_btn, self.monthly_btn):
+            active = (
+                (self.current_period == "daily"   and b.text == "Jour") or
+                (self.current_period == "weekly"  and b.text == "Semaine") or
+                (self.current_period == "monthly" and b.text == "Mois")
+            )
+            color = (100,150,60) if active else DARK_GREEN
+            pygame.draw.rect(surface, color, b.rect, border_radius=b.radius)
+            b.draw(surface)
+
+        # Tableau
+        y = int(self.screen_rect.height * 0.30)
         line_gap = int(clamp(self.screen_rect.height * 0.055, 32, 72))
         for i, (score, username, created_at) in enumerate(self.rows, 1):
             line = f"{i:>2}. {username:<15} — {score} pts"
-            surf = self.ui_font.render(line, True, self.DARK_GREEN)
+            surf = self.ui_font.render(line, True, DARK_GREEN)
             surface.blit(surf, surf.get_rect(midtop=(self.screen_rect.centerx, y)))
             y += line_gap
+
         if not self.rows:
-            empty = self.ui_font.render("Aucun score enregistré.", True, self.DARK_GREEN)
+            empty = self.ui_font.render("Aucun score enregistré.", True, DARK_GREEN)
             surface.blit(empty, empty.get_rect(center=self.screen_rect.center))
+
         self.back_btn.draw(surface)
 
 # =========================
-#     Instanciation
+#   Instanciation & Layout
 # =========================
+compute_layout_for_window(screen_rect.w, screen_rect.h)
+rescale_assets()
 game = Game()
-menu_screen = MenuScreen(screen_rect, title_font, ui_font, DARK_GREEN, GREEN)
-leader_screen = LeaderboardScreen(screen_rect, title_font, ui_font, DARK_GREEN, GREEN)
-app_state = "MENU"
+menu_screen = MenuScreen(screen_rect, title_font, ui_font)
+leader_screen = LeaderboardScreen(screen_rect, title_font, ui_font)
 
 SNAKE_UPDATE = pygame.USEREVENT
 pygame.time.set_timer(SNAKE_UPDATE, 200)
 
 # =========================
-#     Boucle principale
+#        Boucle
 # =========================
 while True:
     dt = clock.tick(60)
-    now_ms = pygame.time.get_ticks()
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
-            pygame.quit()
-            sys.exit()
+            pygame.quit(); sys.exit()
 
         if event.type == pygame.VIDEORESIZE:
             screen = pygame.display.set_mode((event.w, event.h), pygame.RESIZABLE)
             screen_rect = screen.get_rect()
-            update_scaling_for_window(event.w, event.h)
-            # Appliquer nouvelles polices aux écrans
+            compute_layout_for_window(event.w, event.h)
             menu_screen.apply_fonts(title_font, ui_font)
             leader_screen.apply_fonts(title_font, ui_font)
-            # Recalcule leurs layouts avec le nouveau screen_rect
             menu_screen.relayout(screen_rect)
             leader_screen.relayout(screen_rect)
 
@@ -491,11 +488,16 @@ while True:
                 if not pseudo:
                     menu_screen.message = "Veuillez entrer un pseudo."
                 else:
-                    current_player_name = pseudo
-                    current_player_id = db.get_or_create_player(pseudo)
-                    # lance l'animation de zoom de la bordure
-                    start_border_zoom()
-                    menu_screen.message = ""
+                    # Attrape les erreurs de validation levées par db.get_or_create_player
+                    try:
+                        current_player_name = pseudo
+                        current_player_id = db.get_or_create_player(pseudo)
+                    except ValueError as e:
+                        menu_screen.message = str(e)  # ex: "Username must be 3..20 chars ..."
+                    else:
+                        game.state = "PLAYING"
+                        app_state = "PLAYING"
+                        menu_screen.message = ""
             elif action == "LEADERBOARD":
                 leader_screen.load_rows()
                 app_state = "LEADERBOARD"
@@ -508,52 +510,23 @@ while True:
             if event.type == SNAKE_UPDATE:
                 game.update()
             if event.type == pygame.KEYDOWN:
-                if game.state == "STOPPED":
-                    game.state = "PLAYING"
-                if event.key == pygame.K_UP and game.snake.direction != Vector2(0, 1):
-                    game.snake.direction = Vector2(0, -1)
-                if event.key == pygame.K_DOWN and game.snake.direction != Vector2(0, -1):
-                    game.snake.direction = Vector2(0, 1)
-                if event.key == pygame.K_LEFT and game.snake.direction != Vector2(1, 0):
-                    game.snake.direction = Vector2(-1, 0)
-                if event.key == pygame.K_RIGHT and game.snake.direction != Vector2(-1, 0):
-                    game.snake.direction = Vector2(1, 0)
+                if game.state == "STOPPED": game.state = "PLAYING"
+                if event.key == pygame.K_UP    and game.snake.direction != Vector2(0, 1):  game.snake.direction = Vector2(0, -1)
+                if event.key == pygame.K_DOWN  and game.snake.direction != Vector2(0,-1): game.snake.direction = Vector2(0, 1)
+                if event.key == pygame.K_LEFT  and game.snake.direction != Vector2(1, 0):  game.snake.direction = Vector2(-1, 0)
+                if event.key == pygame.K_RIGHT and game.snake.direction != Vector2(-1,0): game.snake.direction = Vector2(1, 0)
 
     # --- DRAW ---
     screen.fill(GREEN)
 
-    # Dessin de la bordure selon l'état
-    if border_raw:
-        if app_state == "MENU":
-            # plein écran sous le menu
+    # Fond jungle
+    if app_state in ("MENU", "LEADERBOARD"):
+        if border_raw:
             draw_border_at_rect(screen_fit_rect())
-        elif app_state == "ZOOMING":
-            # interpolation du zoom
-            t = clamp((now_ms - zoom_start_ms) / ZOOM_DURATION_MS, 0.0, 1.0)
-            if border_target_rect is None:
-                border_target_rect = compute_border_target_rect()
-            if border_current_rect is None:
-                border_current_rect = screen_fit_rect()
-            cur = lerp_rect(border_current_rect, border_target_rect, t)
-            draw_border_at_rect(cur)
-            # Dessine HUD (titre+score à 0) pour montrer qu'ils restent sur le feuillage
-            title_surface = title_font.render("Snake Game", True, DARK_GREEN)
-            screen.blit(title_surface, (offset_px - 5, int(screen_rect.height * 0.03)))
-            score_surface = score_font.render("0", True, DARK_GREEN)
-            screen.blit(score_surface, score_surface.get_rect(
-                topright=(screen_rect.width - offset_px, int(screen_rect.height * 0.03))
-            ))
-            # quand l'animation est finie -> PLAYING
-            if t >= 1.0:
-                border_current_rect = border_target_rect.copy()
-                app_state = "PLAYING"
-        elif app_state == "PLAYING":
-            # Bordure calée pour que le feuillage reste dans l'offset
-            if border_target_rect is None:
-                border_target_rect = compute_border_target_rect()
-            draw_border_at_rect(border_target_rect)
+    elif app_state == "PLAYING":
+        draw_fullscreen_border_with_board_hole()
 
-    # UI/Menu/Leaderboard/Jeu
+    # UI / Jeu
     if app_state == "MENU":
         menu_screen.update(dt)
         menu_screen.draw(screen)
@@ -561,24 +534,24 @@ while True:
     elif app_state == "LEADERBOARD":
         leader_screen.draw(screen)
 
-    elif app_state in ("ZOOMING", "PLAYING"):
-        board_size = cell_size * number_of_cells
-        # cadre du plateau par-dessus la bordure
+    elif app_state == "PLAYING":
+        # cadre du board
         pygame.draw.rect(
             screen, DARK_GREEN,
-            (offset_px - 5, offset_px - 5, board_size + 10, board_size + 10),
+            (offset_x - 5, offset_y - 5, board_size + 10, board_size + 10),
             5
         )
-        if app_state == "PLAYING":
-            game.draw()
+        game.draw()
 
-        # HUD au-dessus de tout
-        title_surface = title_font.render("Snake Game", True, DARK_GREEN)
-        screen.blit(title_surface, (offset_px - 5, int(screen_rect.height * 0.03)))
-        score_text = str(game.score if app_state == "PLAYING" else 0)
-        score_surface = score_font.render(score_text, True, DARK_GREEN)
-        screen.blit(score_surface, score_surface.get_rect(
-            topright=(screen_rect.width - offset_px, int(screen_rect.height * 0.03))
-        ))
+        # HUD (titre + score) avec contour blanc, hors de la grille
+        hud_y = max(10, int(offset_y * 0.6))
+        blit_text_with_outline_topleft(
+            screen, "Snake Game", title_font, DARK_GREEN, WHITE,
+            offset_x - 5, hud_y, thickness=3
+        )
+        blit_text_with_outline_topright(
+            screen, str(game.score), score_font, DARK_GREEN, WHITE,
+            screen_rect.w - offset_x, hud_y, thickness=3
+        )
 
     pygame.display.update()
