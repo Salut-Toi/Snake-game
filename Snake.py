@@ -15,7 +15,7 @@ pygame.init()
 GREEN = (173, 204, 96)
 DARK_GREEN = (43, 51, 24)
 WHITE = (255, 255, 255)
-LIGHT_ACTIVE_GREEN = (140, 190, 90)  # actif pour les boutons de vitesse
+LIGHT_ACTIVE_GREEN = (140, 190, 90)  # actif pour certains boutons
 
 # --- Validation pseudo ---
 ALLOWED_USERNAME_RE = re.compile(r"^[A-Za-z0-9 _-]{3,20}$")
@@ -146,6 +146,7 @@ wrap_walls = db.get_setting("wrap_walls", "0") == "1"
 # --- États ---
 # MENU | PLAYING | LEADERBOARD | PAUSED | HELP_MENU
 app_state = "MENU"
+_prev_app_state = None  # pour l’anim du menu (si tu l’utilises encore)
 
 # =========================
 #        UI widgets
@@ -319,10 +320,19 @@ class Game:
             self.game_over()
     def game_over(self):
         global app_state
+        # Enregistrer le run avec meta (niveau + bords) si db.py le supporte
         try:
-            db.record_run(self.score, current_player_id)
+            db.record_run(self.score, current_player_id,
+                          speed_mode=current_speed, wrap_walls=1 if wrap_walls else 0)
+        except TypeError:
+            # rétrocompatibilité avec ancienne signature
+            try:
+                db.record_run(self.score, current_player_id)
+            except Exception as e:
+                print("DB error:", e)
         except Exception as e:
             print("DB error:", e)
+
         self.snake.reset()
         self.food.position = self.food.generate_random_position(self.snake.body)
         self.state = "STOPPED"
@@ -351,47 +361,53 @@ class MenuScreen:
         self.message = ""
         self.relayout(screen_rect)
 
+        # petite anim d’accueil
+        self.anim_duration_ms = 600
+        self.anim_start_ms = pygame.time.get_ticks()
+
+    def restart_anim(self):
+        self.anim_start_ms = pygame.time.get_ticks()
+
+    def _anim_t(self):
+        elapsed = pygame.time.get_ticks() - self.anim_start_ms
+        t = clamp(elapsed / self.anim_duration_ms, 0.0, 1.0)
+        return 1 - (1 - t) * (1 - t)
+
     def relayout(self, r):
         self.screen_rect = r
         w, h = r.size
 
-        # >>> Espacements augmentés
         title_y   = int(h * 0.06)
-        logo_y    = int(h * 0.14)     # LOGO
-        speed_y   = int(h * 0.26)     # rangée des vitesses (plus bas)
+        logo_y    = int(h * 0.14)
+        speed_y   = int(h * 0.26)
         toggle_y  = int(h * 0.36)
         input_y   = int(h * 0.46)
         buttons_y = int(h * 0.60)
 
-        # Pseudo
         input_w = int(clamp(w * 0.50, 360, 720))
         input_h = int(clamp(h * 0.06, 40, 78))
         self.input.set_rect(pygame.Rect(r.centerx - input_w // 2, input_y, input_w, input_h))
 
-        # Boutons vitesse — plus espacés
         btn_w = int(clamp(w * 0.15, 130, 220))
         btn_h = int(clamp(h * 0.07,  48, 82))
-        spacing = int(clamp(w * 0.03, 18, 48))  # ← espace horizontal augmenté
+        spacing = int(clamp(w * 0.03, 18, 48))
         total_w = 3 * btn_w + 2 * spacing
         start_x = r.centerx - total_w // 2
         self.speed_easy.set_rect(  pygame.Rect(start_x,                       speed_y, btn_w, btn_h))
         self.speed_normal.set_rect(pygame.Rect(start_x + btn_w + spacing,     speed_y, btn_w, btn_h))
         self.speed_hard.set_rect(  pygame.Rect(start_x + 2*(btn_w + spacing), speed_y, btn_w, btn_h))
 
-        # Toggle wrap centré (hauteur = boutons vitesse)
         toggle_h = btn_h
         toggle_w = int(clamp(w * 0.50, 360, 640))
         self.wrap_toggle.set_rect(pygame.Rect(r.centerx - toggle_w//2, toggle_y, toggle_w, toggle_h))
 
-        # Boutons bas — bien espacés verticalement
         main_btn_w = int(clamp(w * 0.30, 240, 380))
         main_btn_h = btn_h
-        gap_y = int(clamp(h * 0.09, 52, 120))   # ← gros écart entre les 3
+        gap_y = int(clamp(h * 0.09, 52, 120))
         self.start_btn.set_rect(  pygame.Rect(r.centerx - main_btn_w // 2, buttons_y,                 main_btn_w, main_btn_h))
         self.leader_btn.set_rect( pygame.Rect(r.centerx - main_btn_w // 2, buttons_y + gap_y,         main_btn_w, main_btn_h))
         self.help_btn.set_rect(   pygame.Rect(r.centerx - main_btn_w // 2, buttons_y + 2 * gap_y,     main_btn_w, main_btn_h))
 
-        # pour draw()
         self._title_y = title_y
         self._logo_center = (r.centerx, logo_y)
 
@@ -430,24 +446,37 @@ class MenuScreen:
         if self.help_btn.is_clicked(event):    return ("HELP_MENU", None)
         return (None, None)
 
-    def update(self, dt): self.input.update(dt)
+    def update(self, dt): 
+        self.input.update(dt)
 
     def draw(self, surface):
-        blit_text_with_outline_center(
-            surface, "Snake Game", self.title_font, DARK_GREEN, WHITE,
-            (self.screen_rect.centerx, self._title_y), thickness=3
-        )
+        t = self._anim_t()
+        y_offset = int((1 - t) * 24)
+        alpha = int(255 * t)
+
+        title_surf = self.title_font.render("Snake Game", True, DARK_GREEN)
+        title_surf.set_alpha(alpha)
+        title_rect = title_surf.get_rect(center=(self.screen_rect.centerx, self._title_y + y_offset))
+        outline = self.title_font.render("Snake Game", True, WHITE); outline.set_alpha(alpha)
+        for dx in (-2, 2):
+            for dy in (-2, 2):
+                surface.blit(outline, outline.get_rect(center=(title_rect.centerx + dx, title_rect.centery + dy)))
+        surface.blit(title_surf, title_rect)
+
         if logo_surface:
-            surface.blit(logo_surface, logo_surface.get_rect(center=self._logo_center))
+            logo = logo_surface.copy()
+            logo.set_alpha(alpha)
+            lr = logo.get_rect(center=(self._logo_center[0], self._logo_center[1] + y_offset))
+            surface.blit(logo, lr)
 
-        # Libellé "Vitesse :" juste sous le logo
-        speed_label_y = self._logo_center[1] + int(self.speed_easy.rect.h * 0.9)
-        blit_text_with_outline_center(
-            surface, "Vitesse :", self.ui_font, DARK_GREEN, WHITE,
-            (self.screen_rect.centerx, speed_label_y), thickness=2
-        )
+        speed_label_y = (self._logo_center[1] + int(self.speed_easy.rect.h * 0.9)) + y_offset
+        speed_lbl = self.ui_font.render("Vitesse :", True, DARK_GREEN); speed_lbl.set_alpha(alpha)
+        speed_lbl_o = self.ui_font.render("Vitesse :", True, WHITE); speed_lbl_o.set_alpha(alpha)
+        for dx in (-1,1):
+            for dy in (-1,1):
+                surface.blit(speed_lbl_o, speed_lbl_o.get_rect(center=(self.screen_rect.centerx+dx, speed_label_y+dy)))
+        surface.blit(speed_lbl, speed_lbl.get_rect(center=(self.screen_rect.centerx, speed_label_y)))
 
-        # Boutons Vitesse (vert clair si sélectionné)
         for name, btn in [("facile", self.speed_easy), ("normal", self.speed_normal), ("difficile", self.speed_hard)]:
             active = (current_speed == name)
             color = LIGHT_ACTIVE_GREEN if active else DARK_GREEN
@@ -463,35 +492,78 @@ class MenuScreen:
             m = self.ui_font.render(self.message, True, (200, 40, 40))
             surface.blit(m, m.get_rect(midtop=(self.screen_rect.centerx, self.input.rect.bottom + 10)))
 
+# -------- Leaderboard avec filtres niveau + bords --------
 class LeaderboardScreen:
     def __init__(self, screen_rect, title_font, ui_font):
         self.title_font = title_font
         self.ui_font = ui_font
         self.screen_rect = screen_rect
         self.rows = []
-        self.current_period = "daily"
+        self.current_period = "daily"  # jour/weekly/monthly
+        # Filtres
+        self.filter_speed = "all"      # all/facile/normal/difficile
+        self.filter_wrap  = "all"      # all/on/off
+
+        # Période
         self.daily_btn   = Button(pygame.Rect(0,0,10,10), "Jour",     ui_font, DARK_GREEN, (255,255,255), (60,72,35))
         self.weekly_btn  = Button(pygame.Rect(0,0,10,10), "Semaine",  ui_font, DARK_GREEN, (255,255,255), (60,72,35))
         self.monthly_btn = Button(pygame.Rect(0,0,10,10), "Mois",     ui_font, DARK_GREEN, (255,255,255), (60,72,35))
+
+        # Filtres niveau
+        self.speed_all_btn   = Button(pygame.Rect(0,0,10,10), "Tous",      ui_font, DARK_GREEN, (255,255,255), (60,72,35))
+        self.speed_easy_btn  = Button(pygame.Rect(0,0,10,10), "Facile",    ui_font, DARK_GREEN, (255,255,255), (60,72,35))
+        self.speed_norm_btn  = Button(pygame.Rect(0,0,10,10), "Normal",    ui_font, DARK_GREEN, (255,255,255), (60,72,35))
+        self.speed_hard_btn  = Button(pygame.Rect(0,0,10,10), "Difficile", ui_font, DARK_GREEN, (255,255,255), (60,72,35))
+
+        # Filtres bords
+        self.wrap_all_btn = Button(pygame.Rect(0,0,10,10), "Tous", ui_font, DARK_GREEN, (255,255,255), (60,72,35))
+        self.wrap_on_btn  = Button(pygame.Rect(0,0,10,10), "Bords ON", ui_font, DARK_GREEN, (255,255,255), (60,72,35))
+        self.wrap_off_btn = Button(pygame.Rect(0,0,10,10), "Bords OFF", ui_font, DARK_GREEN, (255,255,255), (60,72,35))
+
         self.back_btn    = Button(pygame.Rect(0,0,10,10), "Retour",   ui_font, DARK_GREEN, (255,255,255), (60,72,35))
         self.relayout(screen_rect)
         self.load_rows()
 
     def _layout_period_buttons(self, w, h):
-        btn_w = int(clamp(w * 0.15, 130, 220))
-        btn_h = int(clamp(h * 0.07,  48, 82))
-        spacing = int(clamp(w * 0.03, 18, 48))
-        y_base = int(h * 0.18)
+        btn_w = int(clamp(w * 0.14, 120, 220))
+        btn_h = int(clamp(h * 0.065, 44, 78))
+        spacing = int(clamp(w * 0.025, 16, 36))
+        y_base = int(h * 0.14)
         total_w = 3 * btn_w + 2 * spacing
         start_x = (w - total_w) // 2
         self.daily_btn.set_rect(  pygame.Rect(start_x,                       y_base, btn_w, btn_h))
         self.weekly_btn.set_rect( pygame.Rect(start_x + btn_w + spacing,     y_base, btn_w, btn_h))
         self.monthly_btn.set_rect(pygame.Rect(start_x + 2*(btn_w + spacing), y_base, btn_w, btn_h))
 
+    def _layout_speed_filters(self, w, h):
+        btn_w = int(clamp(w * 0.12, 110, 190))
+        btn_h = int(clamp(h * 0.06,  42, 70))
+        spacing = int(clamp(w * 0.02, 14, 28))
+        y = int(h * 0.24)
+        total_w = 4 * btn_w + 3 * spacing
+        x0 = (w - total_w) // 2
+        self.speed_all_btn.set_rect(  pygame.Rect(x0 + 0*(btn_w+spacing), y, btn_w, btn_h))
+        self.speed_easy_btn.set_rect(  pygame.Rect(x0 + 1*(btn_w+spacing), y, btn_w, btn_h))
+        self.speed_norm_btn.set_rect(  pygame.Rect(x0 + 2*(btn_w+spacing), y, btn_w, btn_h))
+        self.speed_hard_btn.set_rect(  pygame.Rect(x0 + 3*(btn_w+spacing), y, btn_w, btn_h))
+
+    def _layout_wrap_filters(self, w, h):
+        btn_w = int(clamp(w * 0.16, 140, 240))
+        btn_h = int(clamp(h * 0.06,  42, 70))
+        spacing = int(clamp(w * 0.03, 18, 34))
+        y = int(h * 0.32)
+        total_w = 3 * btn_w + 2 * spacing
+        x0 = (w - total_w) // 2
+        self.wrap_all_btn.set_rect(pygame.Rect(x0 + 0*(btn_w+spacing), y, btn_w, btn_h))
+        self.wrap_on_btn.set_rect( pygame.Rect(x0 + 1*(btn_w+spacing), y, btn_w, btn_h))
+        self.wrap_off_btn.set_rect(pygame.Rect(x0 + 2*(btn_w+spacing), y, btn_w, btn_h))
+
     def relayout(self, r):
         self.screen_rect = r
         w, h = r.size
         self._layout_period_buttons(w, h)
+        self._layout_speed_filters(w, h)
+        self._layout_wrap_filters(w, h)
         btn_w = int(clamp(w * 0.20, 170, 340))
         btn_h = int(clamp(h * 0.07, 50, 90))
         self.back_btn.set_rect(pygame.Rect(r.centerx - btn_w // 2, h - btn_h - int(h * 0.06), btn_w, btn_h))
@@ -499,54 +571,130 @@ class LeaderboardScreen:
     def apply_fonts(self, title_font, ui_font):
         self.title_font = title_font
         self.ui_font = ui_font
-        for b in (self.daily_btn, self.weekly_btn, self.monthly_btn, self.back_btn):
+        for b in (self.daily_btn, self.weekly_btn, self.monthly_btn,
+                  self.speed_all_btn, self.speed_easy_btn, self.speed_norm_btn, self.speed_hard_btn,
+                  self.wrap_all_btn, self.wrap_on_btn, self.wrap_off_btn, self.back_btn):
             b.set_font(ui_font)
+
+    def _active_col(self, is_active):
+        return LIGHT_ACTIVE_GREEN if is_active else DARK_GREEN
 
     def handle_event(self, event):
         if self.back_btn.is_clicked(event):
             return "BACK"
-        if self.daily_btn.is_clicked(event):
-            self.current_period = "daily";  self.load_rows()
-        if self.weekly_btn.is_clicked(event):
-            self.current_period = "weekly"; self.load_rows()
-        if self.monthly_btn.is_clicked(event):
-            self.current_period = "monthly"; self.load_rows()
+
+        # Périodes
+        if self.daily_btn.is_clicked(event):   self.current_period = "daily";   self.load_rows()
+        if self.weekly_btn.is_clicked(event):  self.current_period = "weekly";  self.load_rows()
+        if self.monthly_btn.is_clicked(event): self.current_period = "monthly"; self.load_rows()
+
+        # Filtres niveau
+        if self.speed_all_btn.is_clicked(event):  self.filter_speed = "all";       self.load_rows()
+        if self.speed_easy_btn.is_clicked(event): self.filter_speed = "facile";    self.load_rows()
+        if self.speed_norm_btn.is_clicked(event): self.filter_speed = "normal";    self.load_rows()
+        if self.speed_hard_btn.is_clicked(event): self.filter_speed = "difficile"; self.load_rows()
+
+        # Filtres bords
+        if self.wrap_all_btn.is_clicked(event): self.filter_wrap = "all";  self.load_rows()
+        if self.wrap_on_btn.is_clicked(event):  self.filter_wrap = "on";   self.load_rows()
+        if self.wrap_off_btn.is_clicked(event): self.filter_wrap = "off";  self.load_rows()
         return None
 
+    def _wrap_to_bool(self):
+        if self.filter_wrap == "on":  return True
+        if self.filter_wrap == "off": return False
+        return None  # all
+
     def load_rows(self):
+        # essaie d’appeler une leaderboard filtrée si dispo
+        wrap_bool = self._wrap_to_bool()
+        speed_mode = None if self.filter_speed == "all" else self.filter_speed
         try:
-            self.rows = db.leaderboard(self.current_period, 10)
+            # nouvelle signature potentielle : leaderboard(period, limit, speed_mode=None, wrap_walls=None)
+            self.rows = db.leaderboard(self.current_period, 10, speed_mode=speed_mode, wrap_walls=wrap_bool)
+        except TypeError:
+            # rétro : sans filtres (au pire on récupère tout-période)
+            try:
+                self.rows = db.leaderboard(self.current_period, 10)
+            except Exception:
+                # fallback ultime : top_scores si disponible
+                try:
+                    self.rows = db.top_scores(10)
+                except Exception as e:
+                    print("Erreur leaderboard:", e)
+                    self.rows = []
         except Exception as e:
             print("Erreur leaderboard:", e)
             self.rows = []
 
     def draw(self, surface):
+        # Titre
         blit_text_with_outline_center(
             surface, "Classements", self.title_font, DARK_GREEN, WHITE,
-            (self.screen_rect.centerx, int(self.screen_rect.height * 0.10)), thickness=3
+            (self.screen_rect.centerx, int(self.screen_rect.height * 0.08)), thickness=3
         )
-        for b in (self.daily_btn, self.weekly_btn, self.monthly_btn):
-            active = (
-                (self.current_period == "daily"   and b.text == "Jour") or
-                (self.current_period == "weekly"  and b.text == "Semaine") or
-                (self.current_period == "monthly" and b.text == "Mois")
-            )
-            color = LIGHT_ACTIVE_GREEN if active else DARK_GREEN
-            b.draw(surface, override_bg=color)
+        # Périodes
+        for b, active in [
+            (self.daily_btn,   self.current_period == "daily"),
+            (self.weekly_btn,  self.current_period == "weekly"),
+            (self.monthly_btn, self.current_period == "monthly"),
+        ]:
+            b.draw(surface, override_bg=self._active_col(active))
 
-        y = int(self.screen_rect.height * 0.34)
-        line_gap = int(clamp(self.screen_rect.height * 0.06, 36, 78))
-        for i, (score, username, created_at) in enumerate(self.rows, 1):
-            line = f"{i:>2}. {username:<15} — {score} pts"
-            surf = self.ui_font.render(line, True, DARK_GREEN)
-            surface.blit(surf, surf.get_rect(midtop=(self.screen_rect.centerx, y)))
-            y += line_gap
+        # Filtres niveau
+        for b, active in [
+            (self.speed_all_btn,  self.filter_speed == "all"),
+            (self.speed_easy_btn, self.filter_speed == "facile"),
+            (self.speed_norm_btn, self.filter_speed == "normal"),
+            (self.speed_hard_btn, self.filter_speed == "difficile"),
+        ]:
+            b.draw(surface, override_bg=self._active_col(active))
+
+        # Filtres bords
+        for b, active in [
+            (self.wrap_all_btn, self.filter_wrap == "all"),
+            (self.wrap_on_btn,  self.filter_wrap == "on"),
+            (self.wrap_off_btn, self.filter_wrap == "off"),
+        ]:
+            b.draw(surface, override_bg=self._active_col(active))
+
+               # === Tableau des scores : 2 colonnes responsive ===
+        y_start = int(self.screen_rect.height * 0.38)
+        line_gap = int(clamp(self.screen_rect.height * 0.06, 34, 70))
 
         if not self.rows:
-            empty = self.ui_font.render("Aucun score enregistré.", True, DARK_GREEN)
-            surface.blit(empty, empty.get_rect(center=self.screen_rect.center))
+            empty = self.ui_font.render("Aucun score pour ces filtres.", True, DARK_GREEN)
+            surface.blit(empty, empty.get_rect(center=(self.screen_rect.centerx, y_start + 20)))
+        else:
+            total = len(self.rows)
+            half = (total + 1) // 2
+            col1 = self.rows[:half]
+            col2 = self.rows[half:]
 
-        self.back_btn.draw(surface)
+            # Positionnement horizontal responsive (deux colonnes équilibrées)
+            # Elles se rapprochent si la fenêtre est petite, s’écartent si grande
+            col_gap = int(clamp(self.screen_rect.width * 0.35, 250, 500))
+            x_left = self.screen_rect.centerx - col_gap // 2
+            x_right = self.screen_rect.centerx + col_gap // 2
+
+            # Position verticale de départ
+            y1 = y2 = y_start
+
+            # Colonne 1
+            for i, (score, username, created_at) in enumerate(col1, 1):
+                line = f"{i}. {username} — {score} pts"
+                surf = self.ui_font.render(line, True, DARK_GREEN)
+                rect = surf.get_rect(midtop=(x_left, y1))
+                surface.blit(surf, rect)
+                y1 += line_gap
+
+            # Colonne 2 (numéros consécutifs)
+            for j, (score, username, created_at) in enumerate(col2, half + 1):
+                line = f"{j}. {username} — {score} pts"
+                surf = self.ui_font.render(line, True, DARK_GREEN)
+                rect = surf.get_rect(midtop=(x_right, y2))
+                surface.blit(surf, rect)
+                y2 += line_gap
 
 class PauseScreen:
     def __init__(self, screen_rect, title_font, ui_font):
@@ -557,7 +705,7 @@ class PauseScreen:
         self.menu_btn   = Button(pygame.Rect(0,0,10,10), "Menu",      ui_font, DARK_GREEN, (255,255,255), (60,72,35))
         self.relayout(screen_rect)
         self.lines = [
-            "Déplacements : Flèches direction",
+            "Déplacements : Flèches directionnelles",
             "Pause : P ou bouton Aide    |    Quitter : Échap",
             "Objectif : mangez les pommes pour grandir.",
             "Astuce : ne vous mordez pas la queue !"
@@ -644,6 +792,11 @@ set_snake_timer(SPEED_INTERVALS[current_speed])
 # =========================
 while True:
     dt = clock.tick(60)
+
+    # relancer l’anim du menu si besoin
+    if _prev_app_state != app_state and app_state == "MENU":
+        menu_screen.restart_anim()
+    _prev_app_state = app_state
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
