@@ -21,6 +21,10 @@
 | **Base de données** | SQLite (fichier local `snake_scores.db`) |
 | **Outils** | Git / GitHub, Paint.NET (pour les images), SQLite Browser |
 
+
+
+
+
 ---
 
 ## 📁 Structure du projet
@@ -42,6 +46,13 @@ Snake-game/
 ├── build/ # Dossier temporaire généré lors de la création de l’exe
 ├── README.md # Documentation du projet
 └── requirements.txt # Dépendances Python (optionnel)
+
+
+
+
+
+
+
 
 ---
 
